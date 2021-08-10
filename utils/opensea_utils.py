@@ -81,11 +81,22 @@ def buildAssetItem(sale, date_entered):
         sold_for_token_quantity=item.get('Sold For Token Quantity'),
         usd_spot_price=sale.get('node').get('price').get('asset').get('usdSpotPrice')
     )
+    if sale.get('node').get('seller').get('user'):
+        item['Seller\'s Name'] = sale.get('node').get('seller').get('user').get('publicUsername')
+    else:
+        item['Seller\'s Name'] = ""
+    item['Seller\'s Address'] = sale.get('node').get('seller').get('address')
+    if sale.get('node').get('winnerAccount').get('user'):
+        item['Buyer\'s Name'] = sale.get('node').get('winnerAccount').get('user').get('publicUsername')
+    else:
+        item['Buyer\'s Name'] = ""
+    item['Buyer\'s Address'] = sale.get('node').get('winnerAccount').get('address')
 
     return item
 
 def processAllSales(allSales, last_sold_date, offset, processing, config_index, config_row, date_entered):
     all_sold = []
+    last_sold = None
     for index, sale in enumerate(allSales.get('data').get('assetEvents').get('edges')):
         if sale.get('node').get('assetQuantity'):
             item = buildAssetItem(sale, date_entered)
@@ -94,16 +105,21 @@ def processAllSales(allSales, last_sold_date, offset, processing, config_index, 
                 print('Processing token_id {0}...'.format(item.get('Token Id')))
                 all_sold.append(item)
                 if index == 0 and offset == 0:
+                    last_sold = item
                     google_utils.updateLastSoldDate(item.get('Sold Date'), config_index, config_row)
             else:
                 processing = False
+                if last_sold is None:
+                    last_sold = item
                 break
     return {
         "all_sold": all_sold,
+        "last_sold": last_sold,
         "processing": processing
     }
 
 def getDataFromOpenSeaByLastSaleDate(index, row):
+    last_sold = None
     offset = 0
     next_page = ''
     processing = True
@@ -124,6 +140,9 @@ def getDataFromOpenSeaByLastSaleDate(index, row):
         
         google_utils.saveData(processed_results.get('all_sold'), field_name_map, os.getenv('GOOGLE_SHEET_SALES_TAB'))
 
+        if last_sold is None:
+            last_sold = processed_results.get('last_sold')
+
         offset += 100          
         if offset < 10000:
             all_sales = getAllSales(token_id, wrapped_contract_address, next_page, 0)
@@ -132,6 +151,11 @@ def getDataFromOpenSeaByLastSaleDate(index, row):
 
         if not all_sales.get('data').get('assetEvents').get('pageInfo').get('endCursor'):
             processing = False
+    
+    return {
+        "data": last_sold,
+        "field_name_map": field_name_map
+    }
 
 def getAllTokenOwners(token_id, wrapped_contract_address, cursor, counter):
     owners_info = {}
@@ -205,17 +229,16 @@ def getOwnerAndTotalSupply(row):
     initFieldNamesMap(google_utils.getFieldNamesFromSheet(os.getenv('GOOGLE_SHEET_SUPPLY_AND_OWNERS_TAB')))
     total_supply = web3_utils.getTotalSupplyAtWrappedContract(contract_address, wrapped_contract_address)
     total_owners = getTokenOwners(token_id, wrapped_contract_address)
-    google_utils.saveData(
-        [buildOwnerSupplyItem(token_id, total_supply, total_owners, date_entered)], 
-        field_name_map, 
-        os.getenv('GOOGLE_SHEET_SUPPLY_AND_OWNERS_TAB')
-    )
+    return {
+        "data": buildOwnerSupplyItem(token_id, total_supply, total_owners, date_entered),
+        "field_name_map": field_name_map
+    }
 
 def getCurioCardsCollection(collection, counter):
     collection_info = {}
     payload = {
     "id": "collectionQuery",
-    "query": "query collectionQuery( $collection: CollectionSlug! $collections: [CollectionSlug!] $collectionQuery: String $includeHiddenCollections: Boolean $numericTraits: [TraitRangeType!] $query: String $sortAscending: Boolean $sortBy: SearchSortBy $stringTraits: [TraitInputType!] $toggles: [SearchToggle!] $showContextMenu: Boolean ) { collection(collection: $collection) { isEditable bannerImageUrl name description imageUrl relayId representativeAsset { assetContract { openseaVersion id } id } ...collection_url ...CollectionHeader_data id } assets: query { ...AssetSearch_data_1bS60n } } fragment AssetCardContent_asset on AssetType { relayId name ...AssetMedia_asset assetContract { address chain openseaVersion id } tokenId collection { slug id } isDelisted } fragment AssetCardContent_assetBundle on AssetBundleType { assetQuantities(first: 18) { edges { node { asset { relayId ...AssetMedia_asset id } id } } } } fragment AssetCardFooter_assetBundle on AssetBundleType { name assetCount assetQuantities(first: 18) { edges { node { asset { collection { name relayId isVerified id } id } id } } } assetEventData { lastSale { unitPriceQuantity { ...AssetQuantity_data id } } } orderData { bestBid { orderType paymentAssetQuantity { ...AssetQuantity_data id } } bestAsk { closedAt orderType dutchAuctionFinalPrice openedAt priceFnEndedAt quantity decimals paymentAssetQuantity { quantity ...AssetQuantity_data id } } } } fragment AssetCardFooter_asset_2V84VL on AssetType { name tokenId collection { name isVerified id } hasUnlockableContent isDelisted isFrozen assetContract { address chain openseaVersion id } assetEventData { firstTransfer { timestamp } lastSale { unitPriceQuantity { ...AssetQuantity_data id } } } decimals orderData { bestBid { orderType paymentAssetQuantity { ...AssetQuantity_data id } } bestAsk { closedAt orderType dutchAuctionFinalPrice openedAt priceFnEndedAt quantity decimals paymentAssetQuantity { quantity ...AssetQuantity_data id } } } } fragment AssetCardHeader_data_27d9G3 on AssetType { relayId favoritesCount isDelisted isFavorite ...AssetContextMenu_data_3z4lq0 @include(if: $showContextMenu) } fragment AssetContextMenu_data_3z4lq0 on AssetType { ...asset_edit_url ...itemEvents_data isDelisted isEditable { value reason } isListable ownership(identity: {}) { isPrivate quantity } creator { address id } collection { isAuthorizedEditor id } } fragment AssetMedia_asset on AssetType { animationUrl backgroundColor collection { displayData { cardDisplayStyle } id } isDelisted displayImageUrl } fragment AssetQuantity_data on AssetQuantityType { asset { ...Price_data id } quantity } fragment AssetSearchFilter_data_1GloFv on Query { ...CollectionFilter_data_tXjHb collection(collection: $collection) { numericTraits { key value { max min } ...NumericTraitFilter_data } stringTraits { key ...StringTraitFilter_data } id } ...PaymentFilter_data_2YoIWt } fragment AssetSearchList_data_gVyhu on SearchResultType { asset { assetContract { address chain id } collection { isVerified id } relayId tokenId ...AssetSelectionItem_data ...asset_url id } assetBundle { relayId id } ...Asset_data_gVyhu } fragment AssetSearch_data_1bS60n on Query { ...CollectionHeadMetadata_data_2YoIWt ...AssetSearchFilter_data_1GloFv ...SearchPills_data_2Kg4Sq search(collections: $collections, first: 32, numericTraits: $numericTraits, querystring: $query, resultType: ASSETS, sortAscending: $sortAscending, sortBy: $sortBy, stringTraits: $stringTraits, toggles: $toggles) { edges { node { ...AssetSearchList_data_gVyhu __typename } cursor } totalCount pageInfo { endCursor hasNextPage } } } fragment AssetSelectionItem_data on AssetType { backgroundColor collection { displayData { cardDisplayStyle } imageUrl id } imageUrl name relayId } fragment Asset_data_gVyhu on SearchResultType { asset { isDelisted ...AssetCardHeader_data_27d9G3 ...AssetCardContent_asset ...AssetCardFooter_asset_2V84VL ...AssetMedia_asset ...asset_url ...itemEvents_data id } assetBundle { ...bundle_url ...AssetCardContent_assetBundle ...AssetCardFooter_assetBundle id } } fragment CollectionFilter_data_tXjHb on Query { selectedCollections: collections(first: 25, collections: $collections, includeHidden: true) { edges { node { assetCount imageUrl name slug id } } } collections(first: 100, includeHidden: $includeHiddenCollections, query: $collectionQuery, sortBy: SEVEN_DAY_VOLUME) { edges { node { assetCount imageUrl name slug id __typename } cursor } pageInfo { endCursor hasNextPage } } } fragment CollectionHeadMetadata_data_2YoIWt on Query { collection(collection: $collection) { bannerImageUrl description imageUrl name id } } fragment CollectionHeader_data on CollectionType { name description imageUrl bannerImageUrl ...CollectionStatsBar_data ...SocialBar_data ...verification_data } fragment CollectionModalContent_data on CollectionType { description imageUrl name slug } fragment CollectionStatsBar_data on CollectionType { stats { floorPrice numOwners totalSupply totalVolume id } slug } fragment NumericTraitFilter_data on NumericTraitTypePair { key value { max min } } fragment PaymentFilter_data_2YoIWt on Query { paymentAssets(first: 10) { edges { node { symbol relayId id __typename } cursor } pageInfo { endCursor hasNextPage } } PaymentFilter_collection: collection(collection: $collection) { paymentAssets { symbol relayId id } id } } fragment Price_data on AssetType { decimals imageUrl symbol usdSpotPrice assetContract { blockExplorerLink chain id } } fragment SearchPills_data_2Kg4Sq on Query { selectedCollections: collections(first: 25, collections: $collections, includeHidden: true) { edges { node { imageUrl name slug ...CollectionModalContent_data id } } } } fragment SocialBar_data on CollectionType { discordUrl externalUrl instagramUsername mediumUsername slug telegramUrl twitterUsername ...collection_url } fragment StringTraitFilter_data on StringTraitType { counts { count value } key } fragment asset_edit_url on AssetType { assetContract { address chain id } tokenId collection { slug id } } fragment asset_url on AssetType { assetContract { address chain id } tokenId } fragment bundle_url on AssetBundleType { slug } fragment collection_url on CollectionType { slug } fragment itemEvents_data on AssetType { assetContract { address chain id } tokenId } fragment verification_data on CollectionType { isMintable isSafelisted isVerified }",
+    "query": "query collectionQuery( $collection: CollectionSlug! $collections: [CollectionSlug!] $collectionQuery: String $includeHiddenCollections: Boolean $numericTraits: [TraitRangeType!] $query: String $sortAscending: Boolean $sortBy: SearchSortBy $stringTraits: [TraitInputType!] $toggles: [SearchToggle!] $showContextMenu: Boolean ) { collection(collection: $collection) { isEditable bannerImageUrl name description imageUrl relayId representativeAsset { assetContract { address openseaVersion id } id } ...collection_url ...CollectionHeader_data id } assets: query { ...AssetSearch_data_1bS60n } } fragment AssetCardContent_asset on AssetType { relayId name ...AssetMedia_asset assetContract { address chain openseaVersion id } tokenId collection { slug id } isDelisted } fragment AssetCardContent_assetBundle on AssetBundleType { assetQuantities(first: 18) { edges { node { asset { relayId ...AssetMedia_asset id } id } } } } fragment AssetCardFooter_assetBundle on AssetBundleType { name assetCount assetQuantities(first: 18) { edges { node { asset { collection { name relayId isVerified id } id } id } } } assetEventData { lastSale { unitPriceQuantity { ...AssetQuantity_data id } } } orderData { bestBid { orderType paymentAssetQuantity { ...AssetQuantity_data id } } bestAsk { closedAt orderType dutchAuctionFinalPrice openedAt priceFnEndedAt quantity decimals paymentAssetQuantity { quantity ...AssetQuantity_data id } } } } fragment AssetCardFooter_asset_2V84VL on AssetType { name tokenId collection { name isVerified id } hasUnlockableContent isDelisted isFrozen assetContract { address chain openseaVersion id } assetEventData { firstTransfer { timestamp } lastSale { unitPriceQuantity { ...AssetQuantity_data id } } } decimals orderData { bestBid { orderType paymentAssetQuantity { ...AssetQuantity_data id } } bestAsk { closedAt orderType dutchAuctionFinalPrice openedAt priceFnEndedAt quantity decimals paymentAssetQuantity { quantity ...AssetQuantity_data id } } } } fragment AssetCardHeader_data_27d9G3 on AssetType { relayId favoritesCount isDelisted isFavorite ...AssetContextMenu_data_3z4lq0 @include(if: $showContextMenu) } fragment AssetContextMenu_data_3z4lq0 on AssetType { ...asset_edit_url ...itemEvents_data isDelisted isEditable { value reason } isListable ownership(identity: {}) { isPrivate quantity } creator { address id } collection { isAuthorizedEditor id } } fragment AssetMedia_asset on AssetType { animationUrl backgroundColor collection { displayData { cardDisplayStyle } id } isDelisted displayImageUrl } fragment AssetQuantity_data on AssetQuantityType { asset { ...Price_data id } quantity } fragment AssetSearchFilter_data_1GloFv on Query { ...CollectionFilter_data_tXjHb collection(collection: $collection) { numericTraits { key value { max min } ...NumericTraitFilter_data } stringTraits { key ...StringTraitFilter_data } id } ...PaymentFilter_data_2YoIWt } fragment AssetSearchList_data_gVyhu on SearchResultType { asset { assetContract { address chain id } collection { isVerified id } relayId tokenId ...AssetSelectionItem_data ...asset_url id } assetBundle { relayId id } ...Asset_data_gVyhu } fragment AssetSearch_data_1bS60n on Query { ...CollectionHeadMetadata_data_2YoIWt ...AssetSearchFilter_data_1GloFv ...SearchPills_data_2Kg4Sq search( collections: $collections first: 32 numericTraits: $numericTraits querystring: $query resultType: ASSETS sortAscending: $sortAscending sortBy: $sortBy stringTraits: $stringTraits toggles: $toggles ) { edges { node { ...AssetSearchList_data_gVyhu __typename } cursor } totalCount pageInfo { endCursor hasNextPage } } } fragment AssetSelectionItem_data on AssetType { backgroundColor collection { displayData { cardDisplayStyle } imageUrl id } imageUrl name relayId } fragment Asset_data_gVyhu on SearchResultType { asset { isDelisted ...AssetCardHeader_data_27d9G3 ...AssetCardContent_asset ...AssetCardFooter_asset_2V84VL ...AssetMedia_asset ...asset_url ...itemEvents_data id } assetBundle { ...bundle_url ...AssetCardContent_assetBundle ...AssetCardFooter_assetBundle id } } fragment CollectionFilter_data_tXjHb on Query { selectedCollections: collections( first: 25 collections: $collections includeHidden: true ) { edges { node { assetCount imageUrl name slug id } } } collections( first: 100 includeHidden: $includeHiddenCollections query: $collectionQuery sortBy: SEVEN_DAY_VOLUME ) { edges { node { assetCount imageUrl name slug id __typename } cursor } pageInfo { endCursor hasNextPage } } } fragment CollectionHeadMetadata_data_2YoIWt on Query { collection(collection: $collection) { bannerImageUrl description imageUrl name id } } fragment CollectionHeader_data on CollectionType { name description imageUrl bannerImageUrl ...CollectionStatsBar_data ...SocialBar_data ...verification_data } fragment CollectionModalContent_data on CollectionType { description imageUrl name slug } fragment CollectionStatsBar_data on CollectionType { stats { floorPrice numOwners totalSupply totalVolume id } slug } fragment NumericTraitFilter_data on NumericTraitTypePair { key value { max min } } fragment PaymentFilter_data_2YoIWt on Query { paymentAssets(first: 10) { edges { node { symbol relayId id __typename } cursor } pageInfo { endCursor hasNextPage } } PaymentFilter_collection: collection(collection: $collection) { paymentAssets { symbol relayId id } id } } fragment Price_data on AssetType { decimals imageUrl symbol usdSpotPrice assetContract { blockExplorerLink chain id } } fragment SearchPills_data_2Kg4Sq on Query { selectedCollections: collections( first: 25 collections: $collections includeHidden: true ) { edges { node { imageUrl name slug ...CollectionModalContent_data id } } } } fragment SocialBar_data on CollectionType { discordUrl externalUrl instagramUsername mediumUsername slug telegramUrl twitterUsername ...collection_url } fragment StringTraitFilter_data on StringTraitType { counts { count value } key } fragment asset_edit_url on AssetType { assetContract { address chain id } tokenId collection { slug id } } fragment asset_url on AssetType { assetContract { address chain id } tokenId } fragment bundle_url on AssetBundleType { slug } fragment collection_url on CollectionType { slug } fragment itemEvents_data on AssetType { assetContract { address chain id } tokenId } fragment verification_data on CollectionType { isMintable isSafelisted isVerified }",
     "variables": {
         "collection": collection,
         "collections": [
