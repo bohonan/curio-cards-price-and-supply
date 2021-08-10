@@ -13,14 +13,20 @@ def initWeb3():
     print('web3 intialized')
 
 def getContractABI(contract_address):
+    json_res = {}
     response = requests.get('%s%s'%(ABI_ENDPOINT, contract_address))
     response_json = response.json()
-    return json.loads(response_json['result'])
+    if response_json.get('result') == 'Contract source code not verified':
+        json_res = [{"constant":True,"inputs":[{"name":"_owner","type":"address"}],"name":"balanceOf","outputs":[{"name":"balance","type":"uint256"}],"payable":False,"stateMutability":"view","type":"function"}]
+    else:
+        json_res = json.loads(response_json['result'])
+    return json_res
 
 def getTotalSupplyAtWrappedContract(contract_address, wrapped_contract_address):
     total_supply = 0
     abi_json = getContractABI(contract_address)
-    ContractFactory = web3.eth.contract(abi=abi_json)
-    contract = ContractFactory(web3.toChecksumAddress(contract_address))
-    total_supply = contract.functions.balanceOf(web3.toChecksumAddress(wrapped_contract_address)).call()
+    if abi_json:
+        ContractFactory = web3.eth.contract(abi=abi_json)
+        contract = ContractFactory(web3.toChecksumAddress(contract_address))
+        total_supply = contract.functions.balanceOf(web3.toChecksumAddress(wrapped_contract_address)).call()
     return total_supply
