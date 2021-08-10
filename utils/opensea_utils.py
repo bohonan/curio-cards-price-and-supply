@@ -1,4 +1,5 @@
 import os
+import copy
 import time
 import datetime
 import requests
@@ -154,7 +155,7 @@ def getDataFromOpenSeaByLastSaleDate(index, row):
     
     return {
         "data": last_sold,
-        "field_name_map": field_name_map
+        "field_name_map": copy.deepcopy(field_name_map)
     }
 
 def getAllTokenOwners(token_id, wrapped_contract_address, cursor, counter):
@@ -231,7 +232,7 @@ def getOwnerAndTotalSupply(row):
     total_owners = getTokenOwners(token_id, wrapped_contract_address)
     return {
         "data": buildOwnerSupplyItem(token_id, total_supply, total_owners, date_entered),
-        "field_name_map": field_name_map
+        "field_name_map": copy.deepcopy(field_name_map)
     }
 
 def getCurioCardsCollection(collection, counter):
