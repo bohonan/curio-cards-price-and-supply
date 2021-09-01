@@ -2,5 +2,6 @@
  google-auth-httplib2 
  google-auth-oauthlib
  py-etherscan-api
+ fake_useragent
  requests
  web3

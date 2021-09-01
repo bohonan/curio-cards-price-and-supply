@@ -1,10 +1,14 @@
 import os
 import copy
 import time
+import json
 import datetime
 import requests
+from fake_useragent import UserAgent
 from utils import google_utils
 from utils import web3_utils
+
+ua = UserAgent()
 
 field_name_map = {}
 
@@ -12,7 +16,7 @@ def calcSoldFor(quantity, decimal):
     return float(quantity) / pow(10, decimal)
 
 def getSoldForInTokenCurrentUSDPrice(sold_for_token_quantity, usd_spot_price):
-    return '${:,.2f}'.format(sold_for_token_quantity * usd_spot_price)
+    return '${:,.2f}'.format(sold_for_token_quantity * float(usd_spot_price))
 
 def getLastSoldDate(last_sold_date):
     if not last_sold_date:
@@ -31,35 +35,21 @@ def updateFieldNamesMap(item):
         field_name_map[key] = key
     return field_name_map
 
-def getAllSales(token_id, wrapped_contract_address, cursor, counter):
+def getAllSales(token_id, wrapped_contract_address, offset, counter):
     last_sale_info = {}
-    payload = {
-        "id": "EventHistoryQuery",
-        "query": "query EventHistoryQuery( $archetype: ArchetypeInputType $bundle: BundleSlug $collections: [CollectionSlug!] $categories: [CollectionSlug!] $chains: [ChainScalar!] $eventTypes: [EventType!] $cursor: String $count: Int = 10 $showAll: Boolean = false $identity: IdentityInputType ) { ...EventHistory_data_L1XK6 } fragment AccountLink_data on AccountType { address user { publicUsername id } ...ProfileImage_data ...wallet_accountKey ...accounts_url } fragment AssetCell_asset on AssetType { collection { name id } name description ...asset_url } fragment AssetQuantity_data on AssetQuantityType { asset { ...Price_data id } quantity } fragment EventHistory_data_L1XK6 on Query { assetEvents( after: $cursor bundle: $bundle archetype: $archetype first: $count categories: $categories collections: $collections chains: $chains eventTypes: $eventTypes identity: $identity includeHidden: true ) { edges { node { assetQuantity { asset @include(if: $showAll) { ...AssetCell_asset id } id } eventTimestamp eventType offerEnteredClosedAt customEventName price { quantity ...AssetQuantity_data id } endingPrice { quantity ...AssetQuantity_data id } seller { ...AccountLink_data id } winnerAccount { ...AccountLink_data id } id __typename } cursor } pageInfo { endCursor hasNextPage } } } fragment Price_data on AssetType { decimals imageUrl symbol usdSpotPrice assetContract { blockExplorerLink account { chain { identifier id } id } id } } fragment ProfileImage_data on AccountType { imageUrl address chain { identifier id } } fragment accounts_url on AccountType { address chain { identifier id } user { publicUsername id } } fragment asset_url on AssetType { assetContract { account { address chain { identifier id } id } id } tokenId traits(first: 100) { edges { node { relayId displayType floatValue intValue traitType value id } } } } fragment wallet_accountKey on AccountType { address chain { identifier id } }",
-        "variables": {
-            "archetype": {
-                "assetContractAddress": wrapped_contract_address,
-                "tokenId": token_id
-            },
-            "eventTypes": [
-                "AUCTION_SUCCESSFUL"
-            ],
-            "cursor": cursor,
-            "count": 100,
-            "showAll": True,
-            "sortAscending": False,
-            "sortBy": "LAST_SALE_DATE",
-        }
+    url = "https://api.opensea.io/api/v1/events?asset_contract_address={0}&token_id={1}&event_type=successful&only_opensea=false&offset={2}&limit=100".format(wrapped_contract_address, token_id, offset)
+    headers_dict = {
+        "User-Agent": str(ua.random)
     }
-    headers_dict = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/75.0.3770.100 Safari/537.36"}
-    response = requests.post(os.getenv('OPENSEA_GRAPHQL'), json=payload, headers=headers_dict)
+    response = requests.get(url, headers=headers_dict)
     if response.ok:
         last_sale_info = response.json()
     else:
+        print(response.status_code)
         if counter < 50:
             counter += 1
             time.sleep(10)
-            last_sale_info = getAllSales(token_id, wrapped_contract_address, cursor, counter)
+            last_sale_info = getAllSales(token_id, wrapped_contract_address, offset, counter)
         else:
             print('Error getting last sale info {0}'.format(response.content))
             raise Exception
@@ -68,38 +58,38 @@ def getAllSales(token_id, wrapped_contract_address, cursor, counter):
 
 def buildAssetItem(sale, date_entered):
     item = {}
-    item['Token Id'] = sale.get('node').get('assetQuantity').get('asset').get('tokenId')
-    item['Token Name'] = sale.get('node').get('assetQuantity').get('asset').get('name')
+    item['Token Id'] = sale.get('asset').get('token_id')
+    item['Token Name'] = sale.get('asset').get('name')
     item['Date Entered'] = date_entered
-    item['Sold Date'] = datetime.datetime.strptime(sale.get('node').get('eventTimestamp'), '%Y-%m-%dT%H:%M:%S').strftime('%m/%d/%Y %H:%M:%S')
+    item['Sold Date'] = datetime.datetime.strptime(sale.get('transaction').get('timestamp'), '%Y-%m-%dT%H:%M:%S').strftime('%m/%d/%Y %H:%M:%S')
     item['Sold For Token Quantity'] = calcSoldFor(
-        quantity=sale.get('node').get('price').get('quantity'), 
-        decimal=sale.get('node').get('price').get('asset').get('decimals')
+        quantity=sale.get('total_price'), 
+        decimal=sale.get('payment_token').get('decimals')
     )
-    item['Sold For Token'] = sale.get('node').get('price').get('asset').get('symbol')
-    item['Sold For Token Current USD Price'] = '${:,.2f}'.format(sale.get('node').get('price').get('asset').get('usdSpotPrice'))
+    item['Sold For Token'] = sale.get('payment_token').get('symbol')
+    item['Sold For Token Current USD Price'] = '${:,.2f}'.format(float(sale.get('payment_token').get('usd_price')))
     item['Sold For USD Price'] = getSoldForInTokenCurrentUSDPrice(
         sold_for_token_quantity=item.get('Sold For Token Quantity'),
-        usd_spot_price=sale.get('node').get('price').get('asset').get('usdSpotPrice')
+        usd_spot_price=sale.get('payment_token').get('usd_price')
     )
-    if sale.get('node').get('seller').get('user'):
-        item['Seller\'s Name'] = sale.get('node').get('seller').get('user').get('publicUsername')
+    if sale.get('seller').get('user') and sale.get('seller').get('user').get('username'):
+        item['Seller\'s Name'] = sale.get('seller').get('user').get('username')
     else:
         item['Seller\'s Name'] = ""
-    item['Seller\'s Address'] = sale.get('node').get('seller').get('address')
-    if sale.get('node').get('winnerAccount').get('user'):
-        item['Buyer\'s Name'] = sale.get('node').get('winnerAccount').get('user').get('publicUsername')
+    item['Seller\'s Address'] = sale.get('seller').get('address')
+    if sale.get('winner_account').get('user') and sale.get('winner_account').get('user').get('username'):
+        item['Buyer\'s Name'] = sale.get('winner_account').get('user').get('username')
     else:
         item['Buyer\'s Name'] = ""
-    item['Buyer\'s Address'] = sale.get('node').get('winnerAccount').get('address')
+    item['Buyer\'s Address'] = sale.get('winner_account').get('address')
 
     return item
 
 def processAllSales(allSales, last_sold_date, offset, processing, config_index, config_row, date_entered):
     all_sold = []
     last_sold = None
-    for index, sale in enumerate(allSales.get('data').get('assetEvents').get('edges')):
-        if sale.get('node').get('assetQuantity'):
+    for index, sale in enumerate(allSales.get('asset_events')):
+        if sale.get('asset') and sale.get('asset').get("token_id") and sale.get('asset_bundle') is None:
             item = buildAssetItem(sale, date_entered)
             updateFieldNamesMap(item)
             if getLastSoldDate(last_sold_date) < getLastSoldDate(item.get('Sold Date')):
@@ -122,7 +112,6 @@ def processAllSales(allSales, last_sold_date, offset, processing, config_index, 
 def getDataFromOpenSeaByLastSaleDate(index, row):
     last_sold = None
     offset = 0
-    next_page = ''
     processing = True
     date_entered = datetime.datetime.now().strftime('%m/%d/%Y %H:%M:%S')
     token_id = google_utils.getRowColumnValue(row, 'Token Id')
@@ -130,11 +119,9 @@ def getDataFromOpenSeaByLastSaleDate(index, row):
     last_sold_date = google_utils.getRowColumnValue(row, 'Last Sold Date')
     initFieldNamesMap(google_utils.getFieldNamesFromSheet(os.getenv('GOOGLE_SHEET_SALES_TAB')))
 
-    all_sales = getAllSales(token_id, wrapped_contract_address, None, 0)
+    all_sales = getAllSales(token_id, wrapped_contract_address, offset, 0)
     while processing:
         print('----------------- Get Sales Offset {0}  | Token ID {1} -----------------'.format(offset, token_id))
-        if next_page != all_sales.get('data').get('assetEvents').get('pageInfo').get('endCursor'):
-            next_page = all_sales.get('data').get('assetEvents').get('pageInfo').get('endCursor')
 
         processed_results = processAllSales(all_sales, last_sold_date, offset, processing, index, row, date_entered)
         processing = processed_results.get('processing')
@@ -146,11 +133,11 @@ def getDataFromOpenSeaByLastSaleDate(index, row):
 
         offset += 100          
         if offset < 10000:
-            all_sales = getAllSales(token_id, wrapped_contract_address, next_page, 0)
+            all_sales = getAllSales(token_id, wrapped_contract_address, offset, 0)
         else:
             break
 
-        if not all_sales.get('data').get('assetEvents').get('pageInfo').get('endCursor'):
+        if len(all_sales) == 0:
             processing = False
     
     return {
@@ -173,7 +160,13 @@ def getAllTokenOwners(token_id, wrapped_contract_address, cursor, counter):
             "cursor": cursor
         }
     }
-    headers_dict = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/75.0.3770.100 Safari/537.36"}
+    headers_dict = {
+        "Content-Type": "application/json",
+        "Content-Length": len(payload),
+        "origin": "https://opensea.io",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/75.0.3770.100 Safari/537.36",
+        "x-api-key": "2f6f419a083c46de9d83ce3dbe7db601"
+    }
     response = requests.post(os.getenv('OPENSEA_GRAPHQL'), json=payload, headers=headers_dict)
     if response.ok:
         owners_info = response.json()
